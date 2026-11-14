@@ -1,23 +1,31 @@
-#include <reg52.h> 
+/***********************************************************
+* 实验 01：LED 闪烁
+* 现象：D1 以约 1s 的周期亮灭交替
+* 硬件：D1 接 P1.0，低电平点亮
+* 晶振：12MHz（delay_ms 为软件粗略延时，约 1ms/次）
+* 编译：Keil C51，目标芯片 STC89C52（或兼容的 8052）
+***********************************************************/
 
+#include <reg52.h>
 
-void Delay() {
-    unsigned char i, j, k;
-    i = 4;
-    j = 129;
-    k = 119;
-    do {
-        do {
-            while (--k);
-        } while (--j);
-    } while (--i);
+/* 约 1ms 软件延时 @12MHz
+   原理：两层空循环，内层 110 次约消耗 1000 个机器周期
+   精确计时请用定时器（见实验 02） */
+void delay_ms(unsigned int ms)
+{
+    unsigned int i, j;
+    for (i = ms; i > 0; i--)
+        for (j = 110; j > 0; j--)
+            ;
 }
 
-void main() {
-    while(1) {  
-        P1 = 0xFE;    
-        Delay(); 
-        P1 = 0xFF;    
-        Delay(); 
+void main(void)
+{
+    while (1)
+    {
+        P1 = 0xFE;          /* P1.0 = 0，点亮 D1 */
+        delay_ms(500);
+        P1 = 0xFF;          /* 熄灭 */
+        delay_ms(500);
     }
 }

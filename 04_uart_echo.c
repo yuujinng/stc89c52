@@ -1,55 +1,84 @@
-#include<reg52.h>
+/***********************************************************
+* 实验 04：串口收发（回显）
+* 现象：电脑串口助手发送一个字节，开发板回显 " I get x"，
+*       同时把该字节显示在 P1 口的 LED 上
+* 硬件：TXD(P3.1)/RXD(P3.0) 接 USB 转 TTL 串口模块
+* 晶振：11.0592MHz（串口时钟必须用这个晶振才没有累计误差）
+* 配置：串口方式 1（10 位异步），波特率 9600，无校验位
+* 原理：T1 方式 2（8 位自动重装）作波特率发生器，
+*       TH1=0xFD → 波特率 = 11059200/12/(256-253)/32 = 9600
+*
+* 优化说明：
+* 1. " I get " 实际有 7 个字符，旧版只发了 6 个（i<6），
+*    现改用 sizeof(reply)-1 自动取长度；
+* 2. ISR 中改为只读一次 SBUF（旧版连读两次，两次之间
+*    数据可能不同）；
+* 3. ISR 中加 RI 判断：串口中断由 RI 或 TI 共同触发，
+*    发送完成（TI）不该走接收逻辑。
+***********************************************************/
 
-unsigned char flag, a, i;
-unsigned char code table[] = " I get ";
+#include <reg52.h>
 
-void init()
+unsigned char flag = 0;                     /* 收到数据的标志，ISR 置 1 */
+unsigned char rx_byte = 0;                  /* 收到的字节 */
+unsigned char code reply[] = " I get ";     /* 固定前缀（7 个字符，含首尾空格） */
+
+void uart_init(void)
 {
-    flag = 0;
-    TMOD = 0x20;    
-    TH1 = 0xfd;     
-    TL1 = 0xfd;
-    TR1 = 1;
-    SM0 = 0;        
+    TMOD = 0x20;        /* T1 方式 2（8 位自动重装），作波特率发生器 */
+    TH1  = 0xFD;        /* 9600bps @11.0592MHz（SMOD=0） */
+    TL1  = 0xFD;
+    TR1  = 1;           /* 启动 T1 */
+
+    SM0 = 0;            /* 串口方式 1：10 位异步（1 起始 + 8 数据 + 1 停止） */
     SM1 = 1;
-    REN = 1;        
-    EA = 1;         
-    ES = 1;
+    REN = 1;            /* 允许接收 */
+
+    EA  = 1;            /* 开总中断 */
+    ES  = 1;            /* 开串口中断 */
 }
 
-void main()
+void main(void)
 {
-    init();
-    while(1)
-    {
-        if(flag == 1)  
-        {
-            ES = 0;   
-            flag = 0;  
+    unsigned char i;
 
-            for(i = 0; i < 6; i++)
+    uart_init();
+    while (1)
+    {
+        if (flag == 1)
+        {
+            flag = 0;
+
+            /* 发送期间关闭串口中断：TI 置位同样会触发串口中断，
+               若不关闭，ISR 会被发送过程反复误触发 */
+            ES = 0;
+
+            for (i = 0; i < sizeof(reply) - 1; i++)     /* sizeof 含 '\0'，需减 1 */
             {
-                SBUF = table[i];
-                while(!TI);  
-                TI = 0;     
+                SBUF = reply[i];    /* 写入 SBUF 即启动发送 */
+                while (!TI)         /* 等待本字节发送完成 */
+                    ;
+                TI = 0;             /* 手动清除发送完成标志 */
             }
-            
-       
-            SBUF = a;
-            while(!TI);
+
+            SBUF = rx_byte;         /* 回显收到的字节 */
+            while (!TI)
+                ;
             TI = 0;
-            
-            ES = 1;   
+
+            ES = 1;                 /* 重新打开串口中断 */
         }
     }
 }
 
-
-void ser() interrupt 4
+/* 串口中断服务函数（interrupt 4 = 串口） */
+void uart_isr(void) interrupt 4
 {
-    
-        RI = 0;       
-      P1 = SBUF;    
-        a = SBUF;    
-        flag = 1;     
+    if (RI)                         /* 只处理接收中断 */
+    {
+        rx_byte = SBUF;             /* 只读一次 SBUF */
+        P1 = rx_byte;               /* LED 实时显示收到的数据 */
+        RI = 0;                     /* 手动清除接收完成标志 */
+        flag = 1;                   /* 通知主循环去发送 */
+    }
 }

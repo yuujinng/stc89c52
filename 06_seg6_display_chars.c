@@ -1,92 +1,91 @@
 /***********************************************************
-* 文件：（优化内存版）
-* 功能：可显示任意6个字符（数字+字母）
-* 硬件：P2.6=段选锁存(dula)，P2.7=位选锁存(wela)
+* 实验 06：六位数码管显示数字与字母
+* 现象：6 位数码管显示 "HELLO "（可改 set_display_string 参数）
+* 硬件：P0    = 数码管段选/位选数据口
+*       P2.6 = 段选锁存使能(dula)，P2.7 = 位选锁存使能(wela)
+* 晶振：12MHz
+*
+* 要点：
+* 1. 段码表、位选表加 code 关键字 → 存进程序存储器 ROM，
+*    不占用只有 128 字节的内部 RAM；
+* 2. 字符串参数用 char code * 指针，直接指向 ROM 中的字符串，
+*    避免拷贝开销；
+* 3. 扫描顺序：熄灭段码 → 位选 → 段码（消残影）。
 ***********************************************************/
 
-#include<reg51.h>
+#include <reg52.h>
 
-// 引脚定义
-sbit dula = P2^6;  // 段选锁存
-sbit wela = P2^7;  // 位选锁存
+sbit dula = P2^6;   /* 段选锁存使能 */
+sbit wela = P2^7;   /* 位选锁存使能 */
 
-// 函数声明
-void delay_ms(unsigned int ms);
-void display_digit(unsigned char pos, unsigned char ch);
-void display_all(void);
-void clear_display(void);
-void set_display_string(char* str);
-unsigned char get_char_index(char ch);
+/* 段码表中"熄灭"的下标 */
+#define SEG_BLANK 37
 
-// ====================== 配置区 ======================
-// 使用code关键字将大数组存储在程序存储器中
-unsigned char data display_buffer[6] = {13, 16, 13, 16, 12, 5};  // 在RAM中
-
-// 位选码定义（存储在CODE区）
-unsigned char code BIT_SELECT[6] = {0xfe, 0xfd, 0xfb, 0xf7, 0xef, 0xdf};
-// 对应：第1位, 第2位, 第3位, 第4位, 第5位, 第6位
-// ===================================================
-
-// 简化段码表（只保留必要字符，存储在CODE区）
-unsigned char code SEG_CODE[] = {
-    // 数字 0-9
-    0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f,
-    
-    // 大写字母 A-F, H, L, O, P, S
-    0x77,  // A
-    0x7c,  // b
-    0x39,  // C
-    0x5e,  // d
-    0x79,  // E
-    0x71,  // F
-    0x3d,  // G
-    0x76,  // H
-    0x30,  // I
-    0x1e,  // J
-    0x00,  // K (不支持)
-    0x38,  // L
-    0x00,  // M (不支持)
-    0x37,  // n
-    0x3f,  // O
-    0x73,  // P
-    0x00,  // Q (不支持)
-    0x33,  // r
-    0x6d,  // S
-    0x31,  // T
-    0x3e,  // U
-    0x00,  // V (不支持)
-    0x00,  // W (不支持)
-    0x00,  // X (不支持)
-    0x6e,  // Y
-    0x00,  // Z (不支持)
-    
-    // 特殊符号
-    0x40,  // '-' 横杠
-    0x00,  // 熄灭/空格
+/* 显示缓冲区（RAM，6 个待显示字符的段码索引） */
+unsigned char data display_buffer[6] = {
+    SEG_BLANK, SEG_BLANK, SEG_BLANK, SEG_BLANK, SEG_BLANK, SEG_BLANK
 };
 
-/***********************************************************
-* 功能：毫秒级延时函数
-***********************************************************/
+/* 位选码：第 1 位(左) ~ 第 6 位(右)，低电平有效 */
+unsigned char code BIT_SELECT[6] = {0xFE, 0xFD, 0xFB, 0xF7, 0xEF, 0xDF};
+
+/* 段码表：数字 0-9 + 部分大写字母 + 少量符号（共 38 项，code 区）
+   下标 0~9    → 数字 0~9
+   下标 10~35  → A b C d E F G H I J K L M n O P Q r S T U V W X Y Z
+   下标 36     → '-'
+   下标 37     → 熄灭
+   不支持造型的字母（K M Q V W X Z 等）直接给熄灭 */
+unsigned char code SEG_CODE[] = {
+    0x3F, 0x06, 0x5B, 0x4F, 0x66,           /* 0 1 2 3 4 */
+    0x6D, 0x7D, 0x07, 0x7F, 0x6F,           /* 5 6 7 8 9 */
+    0x77,   /* 10: A */
+    0x7C,   /* 11: b */
+    0x39,   /* 12: C */
+    0x5E,   /* 13: d */
+    0x79,   /* 14: E */
+    0x71,   /* 15: F */
+    0x3D,   /* 16: G */
+    0x76,   /* 17: H */
+    0x30,   /* 18: I */
+    0x1E,   /* 19: J */
+    0x00,   /* 20: K（无对应造型，熄灭） */
+    0x38,   /* 21: L */
+    0x00,   /* 22: M（无对应造型，熄灭） */
+    0x37,   /* 23: n */
+    0x3F,   /* 24: O */
+    0x73,   /* 25: P */
+    0x00,   /* 26: Q（无对应造型，熄灭） */
+    0x33,   /* 27: r */
+    0x6D,   /* 28: S */
+    0x31,   /* 29: T */
+    0x3E,   /* 30: U */
+    0x00,   /* 31: V（无对应造型，熄灭） */
+    0x00,   /* 32: W（无对应造型，熄灭） */
+    0x00,   /* 33: X（无对应造型，熄灭） */
+    0x6E,   /* 34: Y */
+    0x00,   /* 35: Z（无对应造型，熄灭） */
+    0x40,   /* 36: '-' */
+    0x00    /* 37: 熄灭 */
+};
+
+/* 约 1ms 软件延时 @12MHz */
 void delay_ms(unsigned int ms)
 {
     unsigned int i, j;
-    for(i = ms; i > 0; i--)
-        for(j = 110; j > 0; j--);
+    for (i = ms; i > 0; i--)
+        for (j = 110; j > 0; j--)
+            ;
 }
 
-/***********************************************************
-* 功能：获取字符对应的段码索引
-***********************************************************/
+/* 字符 → 段码表索引；不支持的字符返回熄灭 */
 unsigned char get_char_index(char ch)
 {
-    if(ch >= '0' && ch <= '9')
+    if (ch >= '0' && ch <= '9')
         return ch - '0';
-        
-    else if(ch >= 'A' && ch <= 'Z')
+
+    if (ch >= 'A' && ch <= 'Z')
     {
-        // 只支持部分常用大写字母
-        switch(ch)
+        switch (ch)
         {
             case 'A': return 10;
             case 'B': return 11;
@@ -105,140 +104,97 @@ unsigned char get_char_index(char ch)
             case 'T': return 29;
             case 'U': return 30;
             case 'Y': return 34;
-            default:  return 26;  // 不支持的显示熄灭
+            default:  return SEG_BLANK;
         }
     }
-    else if(ch >= 'a' && ch <= 'z')
+
+    if (ch >= 'a' && ch <= 'z')
     {
-        // 支持部分小写字母
-        switch(ch)
+        /* 小写字母尽量映射到对应造型（多数借用大写段码） */
+        switch (ch)
         {
-            case 'a': return 10;  // 用大写A
-            case 'b': return 11;  // 用大写B
-            case 'c': return 12;  // 用大写C
-            case 'd': return 13;  // 用大写D
-            case 'e': return 14;  // 用大写E
-            case 'f': return 15;  // 用大写F
-            case 'h': return 17;  // 用大写H
-            case 'i': return 18;  // 用大写I
-            case 'l': return 21;  // 用大写L
-            case 'o': return 24;  // 用大写O
-            case 'p': return 25;  // 用大写P
-            case 'r': return 27;  // 用小写r
-            case 's': return 28;  // 用大写S
-            case 't': return 29;  // 用大写T
-            case 'u': return 30;  // 用大写U
-            default:  return 26;  // 不支持的显示熄灭
+            case 'a': return 10;
+            case 'b': return 11;
+            case 'c': return 12;
+            case 'd': return 13;
+            case 'e': return 14;
+            case 'f': return 15;
+            case 'h': return 17;
+            case 'i': return 18;
+            case 'l': return 21;
+            case 'o': return 24;
+            case 'p': return 25;
+            case 'r': return 27;
+            case 's': return 28;
+            case 't': return 29;
+            case 'u': return 30;
+            default:  return SEG_BLANK;
         }
     }
-    else
+
+    switch (ch)
     {
-        // 特殊字符
-        switch(ch)
-        {
-            case '-': return 36;
-            case ' ': return 26;  // 空格=熄灭
-            default:  return 26;
-        }
+        case '-': return 36;
+        case ' ': return SEG_BLANK;
+        default:  return SEG_BLANK;
     }
 }
 
-/***********************************************************
-* 功能：显示单个字符到指定位置
-***********************************************************/
-void display_digit(unsigned char pos, unsigned char ch_index)
-{
-    if(pos > 5) return;
-    
-    // 1. 位选：选择要显示的位置
-    wela = 1;
-    P0 = BIT_SELECT[pos];
-    wela = 0;
-    
-    // 2. 段选：输出字符对应的段码
-    dula = 1;
-    P0 = SEG_CODE[ch_index];
-    dula = 0;
-    
-    // 3. 短暂延时
-    delay_ms(1);
-    
-    // 4. 消隐
-    dula = 1;
-    P0 = 0x00;
-    dula = 0;
-}
-
-/***********************************************************
-* 功能：刷新显示整个6个字符
-***********************************************************/
-void display_all(void)
+/* 把字符串写入显示缓冲区（最多 6 个字符，不足的位熄灭） */
+void set_display_string(char code *str)
 {
     unsigned char i;
-    
-    for(i = 0; i < 6; i++)
+    for (i = 0; i < 6; i++)
     {
-        display_digit(i, display_buffer[i]);
-    }
-}
-
-/***********************************************************
-* 功能：清空数码管显示
-***********************************************************/
-void clear_display(void)
-{
-    unsigned char i;
-    
-    for(i = 0; i < 6; i++)
-    {
-        wela = 1;
-        P0 = BIT_SELECT[i];
-        wela = 0;
-        
-        dula = 1;
-        P0 = 0x00;
-        dula = 0;
-    }
-}
-
-/***********************************************************
-* 功能：设置要显示的6个字符
-***********************************************************/
-void set_display_string(char* str)
-{
-    unsigned char i;
-    
-    for(i = 0; i < 6; i++)
-    {
-        if(str[i] == '\0')
-            display_buffer[i] = 26;  // 熄灭
+        if (str[i] == '\0')
+            display_buffer[i] = SEG_BLANK;
         else
             display_buffer[i] = get_char_index(str[i]);
     }
 }
 
-/***********************************************************
-* 主函数
-***********************************************************/
+/* 在指定位置显示一个字符（含消残影的扫描顺序） */
+void display_digit(unsigned char pos, unsigned char seg_index)
+{
+    if (pos > 5) return;
+
+    dula = 1;  P0 = 0x00;  dula = 0;                    /* 1. 熄灭段码 */
+    wela = 1;  P0 = BIT_SELECT[pos];  wela = 0;         /* 2. 选中目标位 */
+    dula = 1;  P0 = SEG_CODE[seg_index];  dula = 0;     /* 3. 输出段码 */
+
+    delay_ms(1);                                        /* 4. 保持亮度 */
+}
+
+/* 刷新一帧（6 位各显示一次，主循环不停调用） */
+void display_all(void)
+{
+    unsigned char i;
+    for (i = 0; i < 6; i++)
+        display_digit(i, display_buffer[i]);
+}
+
+/* 清屏 */
+void clear_display(void)
+{
+    unsigned char i;
+    for (i = 0; i < 6; i++)
+    {
+        dula = 1;  P0 = 0x00;  dula = 0;
+        wela = 1;  P0 = BIT_SELECT[i];  wela = 0;
+    }
+}
+
 void main(void)
 {
-    // 初始化
     clear_display();
-    
-    // 设置要显示的字符
-    set_display_string("HELLO ");  // 显示"HELLO"
-    
-    // 或者显示其他内容：
-    // set_display_string("123456");  // 显示数字
-    // set_display_string("ABCDEF");  // 显示字母
-    // set_display_string("TEST  ");  // 显示"TEST"
-    
-    while(1)
+
+    /* 改这里换显示内容（最多 6 个字符） */
+    set_display_string("HELLO ");
+    /* set_display_string("123456"); */
+    /* set_display_string("TEST"); */
+
+    while (1)
     {
-        // 不断刷新显示
-        display_all();
-        
-        // 如果需要动态效果，可以在这里添加代码
-        // 注意：不要在循环内定义大数组或调用太多函数
+        display_all();      /* 不停刷新，动态扫描 */
     }
 }
