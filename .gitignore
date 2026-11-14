@@ -1,0 +1,18 @@
+# Keil uVision 工程目录（如把工程放进仓库，这些不应提交）
+Objects/
+Listings/
+DebugConfig/
+
+# Keil 临时/用户文件
+*.uvgui.*
+*.uvgu*
+*.uvopt
+*.uvopt2
+*.plg
+*.lst
+*.dep
+*.iex
+*.bak
+*.scvd
+*.htm
+JLinkLog.txt
